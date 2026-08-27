@@ -84,18 +84,27 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "1"
-        # windows-latest ships mingw-w64 gcc via MSYS2's UCRT64 toolchain
-        # under C:\msys64 is NOT preinstalled; use the one Strawberry Perl
-        # or Git bundles is unreliable, so install a known-good mingw-w64
-        # explicitly instead of guessing what's already on PATH.
+        # windows-latest ships MSYS2 preinstalled at C:\msys64, including a
+        # ready-to-use mingw-w64 gcc (no package manager step needed). An
+        # earlier version of this step used `choco install mingw`, which
+        # hung indefinitely on this runner image (repro'd twice); using the
+        # preinstalled toolchain avoids that network dependency entirely.
         shell: pwsh
         run: |
-          choco install mingw --version=13.2.0 -y --no-progress
-          $gcc = (Get-Command x86_64-w64-mingw32-gcc.exe -ErrorAction SilentlyContinue)
+          $candidates = @(
+            "C:\msys64\mingw64\bin\x86_64-w64-mingw32-gcc.exe",
+            "C:\msys64\usr\bin\x86_64-w64-mingw32-gcc.exe"
+          )
+          $gcc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $gcc) {
-            $gcc = Get-ChildItem "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin\x86_64-w64-mingw32-gcc.exe" -ErrorAction SilentlyContinue
+            $found = Get-Command x86_64-w64-mingw32-gcc.exe -ErrorAction SilentlyContinue
+            if ($found) { $gcc = $found.Path }
           }
-          $env:CC = $gcc.Path ?? "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin\x86_64-w64-mingw32-gcc.exe"
+          if (-not $gcc) {
+            throw "no mingw-w64 gcc found (checked: $($candidates -join ', '), and PATH)"
+          }
+          Write-Host "using CC=$gcc"
+          $env:CC = $gcc
           go build -buildmode=c-shared -o "${{ matrix.out }}" .
 
       - name: Generate MSVC import library (Windows only)
