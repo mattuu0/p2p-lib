@@ -76,14 +76,27 @@ cargo run --example chat -- <token>
 
 ## ビルド要件
 
+Rust クレート (`rust/p2p-lib-sys` の `build.rs`) は **デフォルトで Go/cgo 不要**です。
+GitHub Actions ([.github/workflows/build-native.yml](.github/workflows/build-native.yml)) が
+タグ付きリリースのたびに Windows/Linux/macOS 向けの `tailcat_cgo` 共有ライブラリをビルドして
+GitHub Releases に公開しており、`cargo build` は自分の crate バージョンに対応するアセットを
+自動ダウンロード（SHA256 検証込み）して使います。Go や NDK/Xcode を用意しなくても
+`cargo add p2p-lib` するだけで動くのはこのためです。
+
+ローカルの `tailcat/`・`tailcat-cgo/` の変更を試したい場合や、まだプリビルドが存在しない
+プラットフォーム向けにビルドしたい場合は、環境変数 `P2P_LIB_BUILD_FROM_SOURCE=1` を立てると
+ダウンロードを一切試みずローカルの Go ソースからビルドします。この場合は以下が必要です：
+
 - Go 1.26.5 以上
-- Rust (stable)
 - **Windows**: mingw-w64 gcc (`x86_64-w64-mingw32-gcc`) — cgo の C コンパイラとして使用。
   Rust のデフォルトターゲットは `x86_64-pc-windows-msvc` なので、`build.rs` は Go が生成した
   `.dll` から `dumpbin.exe`/`lib.exe`（MSVC Build Tools 同梱）を使って MSVC 互換の
   `.lib` インポートライブラリを自動生成します。VS Build Tools（あるいは Visual Studio）が
   入っていて `rustc` 自体がこの環境でビルドできるなら、追加の手作業は不要です。
 - **Linux/macOS**: 通常の cgo ビルド (`gcc`/`clang`) で動作する想定です。
+
+プリビルドのダウンロード先リポジトリを変えたい場合（フォーク運用など）は
+`P2P_LIB_RELEASE_REPO=<owner>/<repo>` で上書きできます。
 
 ## モバイル対応について（Android / iOS）
 

@@ -1,32 +1,204 @@
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// GitHub repo hosting the prebuilt tailcat_cgo release assets that
+/// build-native.yml (.github/workflows) publishes. Override with
+/// P2P_LIB_RELEASE_REPO for forks that publish their own releases.
+const DEFAULT_RELEASE_REPO: &str = "mattuu0/p2p-lib";
 
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
 
-    let go_os = match target_os.as_str() {
+    let (lib_filename, link_kind) = match target_os.as_str() {
+        "windows" => ("tailcat_cgo.dll", "dylib"),
+        "linux" => ("libtailcat_cgo.so", "dylib"),
+        "macos" => ("libtailcat_cgo.dylib", "dylib"),
+        other => panic!("p2p-lib-sys: unsupported target OS `{other}`"),
+    };
+    let lib_path = out_dir.join(lib_filename);
+
+    // Default: fetch the prebuilt binary GitHub Actions already built and
+    // published for this exact crate version, so consumers don't need Go
+    // or a cgo toolchain installed at all. Set P2P_LIB_BUILD_FROM_SOURCE=1
+    // to always build tailcat-cgo locally instead (e.g. for platforms the
+    // release workflow doesn't cover yet, or while developing tailcat-cgo
+    // itself against a local submodule change).
+    let build_from_source = env::var("P2P_LIB_BUILD_FROM_SOURCE").is_ok();
+
+    if !build_from_source {
+        match try_download_prebuilt(&out_dir, lib_filename, &target_os, &target_arch) {
+            Ok(()) => {
+                finish_link(&out_dir, &lib_path, lib_filename, link_kind, &target_os, &target_arch);
+                return;
+            }
+            Err(e) => {
+                println!(
+                    "cargo:warning=p2p-lib-sys: prebuilt binary download failed ({e}); \
+                     falling back to building tailcat-cgo from source. Set \
+                     P2P_LIB_BUILD_FROM_SOURCE=1 to skip the download attempt entirely."
+                );
+            }
+        }
+    }
+
+    build_from_go_source(&lib_path, &target_os, &target_arch);
+    finish_link(&out_dir, &lib_path, lib_filename, link_kind, &target_os, &target_arch);
+}
+
+/// Shared tail end of both code paths: copy the built/downloaded shared
+/// library next to the final binary, generate the MSVC import lib on
+/// Windows, and emit the link directives.
+fn finish_link(
+    out_dir: &Path,
+    lib_path: &Path,
+    lib_filename: &str,
+    link_kind: &str,
+    target_os: &str,
+    target_arch: &str,
+) {
+    copy_to_target_dirs(out_dir, lib_path, lib_filename);
+
+    if target_os == "windows" {
+        generate_msvc_import_lib(out_dir, lib_path, target_arch);
+    }
+
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib={link_kind}=tailcat_cgo");
+}
+
+/// Downloads the prebuilt tailcat_cgo archive for this crate's version and
+/// the current (target_os, target_arch) from GitHub Releases, verifies it
+/// against the release's SHA256SUMS.txt, and extracts lib_filename (plus
+/// tailcat_cgo.h) into out_dir. Returns Err with a human-readable reason on
+/// any failure (network, missing release, checksum mismatch, ...) so the
+/// caller can fall back to building from source.
+fn try_download_prebuilt(
+    out_dir: &Path,
+    lib_filename: &str,
+    target_os: &str,
+    target_arch: &str,
+) -> Result<(), String> {
+    let version = env::var("CARGO_PKG_VERSION").map_err(|e| e.to_string())?;
+    let repo = env::var("P2P_LIB_RELEASE_REPO").unwrap_or_else(|_| DEFAULT_RELEASE_REPO.to_string());
+    let asset_name = release_asset_name(target_os, target_arch)?;
+
+    let base_url = format!("https://github.com/{repo}/releases/download/v{version}");
+    let zip_url = format!("{base_url}/{asset_name}.zip");
+    let sums_url = format!("{base_url}/SHA256SUMS.txt");
+
+    println!("cargo:rerun-if-env-changed=P2P_LIB_BUILD_FROM_SOURCE");
+    println!("cargo:rerun-if-env-changed=P2P_LIB_RELEASE_REPO");
+
+    let sums_text = http_get(&sums_url)?;
+    let expected_hash = sums_text
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.split_whitespace();
+            let hash = parts.next()?;
+            let name = parts.next()?.trim_start_matches('*');
+            (name == format!("{asset_name}.zip")).then(|| hash.to_string())
+        })
+        .ok_or_else(|| format!("{asset_name}.zip not listed in {sums_url}"))?;
+
+    let zip_bytes = http_get_bytes(&zip_url)?;
+
+    let actual_hash = sha256_hex(&zip_bytes);
+    if actual_hash != expected_hash {
+        return Err(format!(
+            "SHA256 mismatch for {asset_name}.zip: expected {expected_hash}, got {actual_hash}"
+        ));
+    }
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        .map_err(|e| format!("invalid zip archive: {e}"))?;
+    let mut found_lib = false;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let entry_name = entry
+            .enclosed_name()
+            .ok_or_else(|| "zip entry with unsafe path".to_string())?;
+        let file_name = entry_name
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if file_name == lib_filename || file_name == "tailcat_cgo.h" || file_name == "tailcat_cgo.lib" {
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            fs::write(out_dir.join(file_name), &buf).map_err(|e| e.to_string())?;
+            if file_name == lib_filename {
+                found_lib = true;
+            }
+        }
+    }
+    if !found_lib {
+        return Err(format!("{lib_filename} not found inside {asset_name}.zip"));
+    }
+    println!("cargo:warning=p2p-lib-sys: using prebuilt {asset_name} v{version} from GitHub Releases");
+    Ok(())
+}
+
+fn release_asset_name(target_os: &str, target_arch: &str) -> Result<String, String> {
+    Ok(match (target_os, target_arch) {
+        ("windows", "x86_64") => "tailcat_cgo-windows-amd64".to_string(),
+        ("linux", "x86_64") => "tailcat_cgo-linux-amd64".to_string(),
+        ("macos", "aarch64") => "tailcat_cgo-darwin-arm64".to_string(),
+        ("macos", "x86_64") => "tailcat_cgo-darwin-amd64".to_string(),
+        (os, arch) => {
+            return Err(format!(
+                "no prebuilt release asset published for {os}/{arch} yet"
+            ))
+        }
+    })
+}
+
+fn http_get(url: &str) -> Result<String, String> {
+    let bytes = http_get_bytes(url)?;
+    String::from_utf8(bytes).map_err(|e| format!("{url}: response was not valid UTF-8: {e}"))
+}
+
+fn http_get_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let response = ureq::get(url)
+        .call()
+        .map_err(|e| format!("GET {url} failed: {e}"))?;
+    let mut buf = Vec::new();
+    response
+        .into_reader()
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("GET {url}: failed to read body: {e}"))?;
+    Ok(buf)
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Builds tailcat-cgo from the local Go source (the original behavior,
+/// still used when P2P_LIB_BUILD_FROM_SOURCE=1 is set or the prebuilt
+/// download fails for any reason).
+fn build_from_go_source(lib_path: &Path, target_os: &str, target_arch: &str) {
+    let go_os = match target_os {
         "windows" => "windows",
         "linux" => "linux",
         "macos" => "darwin",
         other => panic!("p2p-lib-sys: unsupported target OS `{other}`"),
     };
-    let go_arch = match target_arch.as_str() {
+    let go_arch = match target_arch {
         "x86_64" => "amd64",
         "aarch64" => "arm64",
         other => panic!("p2p-lib-sys: unsupported target arch `{other}`"),
     };
-
-    let (lib_filename, link_kind) = match target_os.as_str() {
-        "windows" => ("tailcat_cgo.dll", "dylib"),
-        "linux" => ("libtailcat_cgo.so", "dylib"),
-        "macos" => ("libtailcat_cgo.dylib", "dylib"),
-        _ => unreachable!(),
-    };
-    let lib_path = out_dir.join(lib_filename);
 
     // The cgo wrapper module lives at ../../tailcat-cgo relative to this
     // crate (p2p-lib-sys), inside the parent p2p-lib repo.
@@ -61,13 +233,15 @@ fn main() {
     if !status.success() {
         panic!("p2p-lib-sys: `go build -buildmode=c-shared` failed (see output above)");
     }
+}
 
-    // Copy the shared library next to wherever the dynamic loader will
-    // actually look for it at runtime (OUT_DIR isn't on the default search
-    // path). OUT_DIR is target/<profile>/build/<crate>-<hash>/out, so
-    // target/<profile> is three levels up; binaries, integration tests,
-    // and examples all end up in that directory or its `examples`/`deps`
-    // subdirectories depending on how they're invoked, so cover all three.
+/// Copies the shared library next to wherever the dynamic loader will
+/// actually look for it at runtime (OUT_DIR isn't on the default search
+/// path). OUT_DIR is target/<profile>/build/<crate>-<hash>/out, so
+/// target/<profile> is three levels up; binaries, integration tests, and
+/// examples all end up in that directory or its `examples`/`deps`
+/// subdirectories depending on how they're invoked, so cover all three.
+fn copy_to_target_dirs(out_dir: &Path, lib_path: &Path, lib_filename: &str) {
     if let Some(target_dir) = out_dir.ancestors().nth(3).map(Path::to_path_buf) {
         for dest_dir in [
             target_dir.clone(),
@@ -78,7 +252,7 @@ fn main() {
                 continue;
             }
             let dest = dest_dir.join(lib_filename);
-            if let Err(e) = fs::copy(&lib_path, &dest) {
+            if let Err(e) = fs::copy(lib_path, &dest) {
                 println!(
                     "cargo:warning=p2p-lib-sys: could not copy {} to {}: {e}",
                     lib_path.display(),
@@ -87,13 +261,6 @@ fn main() {
             }
         }
     }
-
-    if target_os == "windows" {
-        generate_msvc_import_lib(&out_dir, &lib_path, &target_arch);
-    }
-
-    println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib={link_kind}=tailcat_cgo");
 }
 
 /// The Go toolchain's cgo -buildmode=c-shared on Windows uses mingw-w64 gcc
@@ -105,7 +272,15 @@ fn main() {
 /// MSVC Build Tools -- the same toolchain rustc itself needs on this
 /// target, so if rustc can build here, they're expected to be on PATH
 /// (typically via a "Developer Command Prompt" or vswhere-located tools).
+///
+/// Skipped entirely if a prebuilt tailcat_cgo.lib was already extracted
+/// from the downloaded release zip (see try_download_prebuilt) -- CI
+/// already generated one against the exact DLL it published.
 fn generate_msvc_import_lib(out_dir: &Path, dll_path: &Path, target_arch: &str) {
+    if out_dir.join("tailcat_cgo.lib").is_file() {
+        return;
+    }
+
     let msvc_bin = find_msvc_bin_dir();
     let tool = |name: &str| -> Command {
         match &msvc_bin {

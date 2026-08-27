@@ -7,3 +7,8 @@ license.workspace = true
 repository.workspace = true
 links = "tailcat_cgo"
 build = "build.rs"
+
+[build-dependencies]
+ureq = { version = "2", default-features = false, features = ["tls"] }
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }

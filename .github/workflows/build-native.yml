@@ -1,0 +1,254 @@
+name: Build native libraries
+
+# Builds tailcat-cgo (the Go/cgo wrapper around tailcat) into a platform
+# shared/static library for every platform this project supports, and
+# publishes them as GitHub Release assets. Consumers (rust/p2p-lib-sys's
+# build.rs, the Flutter plugin's podspecs/CMakeLists.txt) default to
+# downloading these prebuilt binaries instead of requiring a local Go +
+# cgo toolchain; see docs/prebuilt-binaries.md for the download/verify
+# contract each of them implements.
+#
+# Triggered on version tags (v*) for real releases, and on pushes to
+# main that touch tailcat-cgo/ so build breakage is caught immediately
+# (that run uploads workflow artifacts only, no GitHub Release).
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+    paths:
+      - "tailcat-cgo/**"
+      - "tailcat/**"
+      - ".github/workflows/build-native.yml"
+  pull_request:
+    paths:
+      - "tailcat-cgo/**"
+      - "tailcat/**"
+      - ".github/workflows/build-native.yml"
+  workflow_dispatch: {}
+
+env:
+  GO_VERSION: "1.26.5"
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            out: tailcat_cgo.dll
+            artifact: tailcat_cgo-windows-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            out: libtailcat_cgo.so
+            artifact: tailcat_cgo-linux-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            out: libtailcat_cgo.dylib
+            artifact: tailcat_cgo-darwin-arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            out: libtailcat_cgo.dylib
+            artifact: tailcat_cgo-darwin-amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build shared library (Unix)
+        if: runner.os != 'Windows'
+        working-directory: tailcat-cgo
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+        run: go build -buildmode=c-shared -o "${{ matrix.out }}" .
+
+      - name: Build shared library (Windows, mingw-w64)
+        if: runner.os == 'Windows'
+        working-directory: tailcat-cgo
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+        # windows-latest ships mingw-w64 gcc via MSYS2's UCRT64 toolchain
+        # under C:\msys64 is NOT preinstalled; use the one Strawberry Perl
+        # or Git bundles is unreliable, so install a known-good mingw-w64
+        # explicitly instead of guessing what's already on PATH.
+        shell: pwsh
+        run: |
+          choco install mingw --version=13.2.0 -y --no-progress
+          $gcc = (Get-Command x86_64-w64-mingw32-gcc.exe -ErrorAction SilentlyContinue)
+          if (-not $gcc) {
+            $gcc = Get-ChildItem "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin\x86_64-w64-mingw32-gcc.exe" -ErrorAction SilentlyContinue
+          }
+          $env:CC = $gcc.Path ?? "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin\x86_64-w64-mingw32-gcc.exe"
+          go build -buildmode=c-shared -o "${{ matrix.out }}" .
+
+      - name: Generate MSVC import library (Windows only)
+        if: runner.os == 'Windows'
+        working-directory: tailcat-cgo
+        shell: pwsh
+        run: |
+          # Consumers linking with link.exe (rustc's default
+          # x86_64-pc-windows-msvc target) need a .lib import library that
+          # mingw-w64 gcc doesn't produce; regenerate it from the DLL's
+          # export table the same way rust/p2p-lib-sys/build.rs does
+          # locally, so the published asset works out of the box.
+          $dumpbin = vswhere -latest -find "VC\Tools\MSVC\*\bin\HostX64\x64\dumpbin.exe" | Select-Object -First 1
+          $libExe = vswhere -latest -find "VC\Tools\MSVC\*\bin\HostX64\x64\lib.exe" | Select-Object -First 1
+          $exports = & $dumpbin /exports tailcat_cgo.dll
+          $names = $exports | Select-String '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(tailcat_\w+)' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+          "EXPORTS" | Set-Content tailcat_cgo.def
+          $names | Add-Content tailcat_cgo.def
+          & $libExe "/def:tailcat_cgo.def" "/out:tailcat_cgo.lib" "/machine:X64"
+
+      - name: Stage release assets
+        shell: bash
+        working-directory: tailcat-cgo
+        run: |
+          mkdir -p ../dist
+          cp "${{ matrix.out }}" ../dist/
+          cp tailcat_cgo.h ../dist/
+          if [ -f tailcat_cgo.lib ]; then cp tailcat_cgo.lib ../dist/; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+
+  android:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            goarch: arm64
+            clang: aarch64-linux-android21-clang
+          - abi: armeabi-v7a
+            goarch: arm
+            clang: armv7a-linux-androideabi21-clang
+          - abi: x86_64
+            goarch: amd64
+            clang: x86_64-linux-android21-clang
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # ubuntu-latest's preinstalled Android SDK includes an NDK; setup-ndk
+      # pins a known-good version instead of trusting whatever image default
+      # happens to be there.
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+
+      - name: Build shared library
+        working-directory: tailcat-cgo
+        env:
+          GOOS: android
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarch == 'arm' && '7' || '' }}
+          CGO_ENABLED: "1"
+        run: |
+          CC="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.clang }}"
+          CC="$CC" go build -buildmode=c-shared -o libtailcat_cgo.so .
+          mkdir -p ../dist/${{ matrix.abi }}
+          cp libtailcat_cgo.so ../dist/${{ matrix.abi }}/
+          cp tailcat_cgo.h ../dist/${{ matrix.abi }}/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tailcat_cgo-android-${{ matrix.abi }}
+          path: dist/
+
+  ios:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk: iphoneos
+            goarch: arm64
+            out_dir: device
+          - sdk: iphonesimulator
+            goarch: arm64
+            out_dir: simulator
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build static archive
+        working-directory: tailcat-cgo
+        run: |
+          SDK=$(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path)
+          CC=$(xcrun --sdk ${{ matrix.sdk }} -f clang)
+          VERSION_MIN_FLAG="-mios-version-min=13.0"
+          if [ "${{ matrix.sdk }}" = "iphonesimulator" ]; then
+            VERSION_MIN_FLAG="-mios-simulator-version-min=13.0"
+          fi
+          GOOS=ios GOARCH=${{ matrix.goarch }} CGO_ENABLED=1 \
+            SDKROOT="$SDK" CC="$CC" \
+            CGO_CFLAGS="-isysroot $SDK $VERSION_MIN_FLAG -arch ${{ matrix.goarch }}" \
+            CGO_LDFLAGS="-isysroot $SDK $VERSION_MIN_FLAG -arch ${{ matrix.goarch }}" \
+            go build -buildmode=c-archive -o libtailcat_cgo.a .
+          mkdir -p ../dist/${{ matrix.out_dir }}
+          cp libtailcat_cgo.a ../dist/${{ matrix.out_dir }}/
+          cp libtailcat_cgo.h ../dist/${{ matrix.out_dir }}/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tailcat_cgo-ios-${{ matrix.out_dir }}
+          path: dist/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop, android, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package each platform artifact as a zip
+        run: |
+          mkdir -p release
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            (cd "$dir" && zip -r "../../release/${name}.zip" .)
+          done
+          cd release && sha256sum *.zip > SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.zip
+            release/SHA256SUMS.txt
+          draft: true
+          generate_release_notes: true
