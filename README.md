@@ -128,6 +128,26 @@ tailcat の TCP スタックはプロセス内 (gVisor netstack) で完結して
 ## 謝辞
 
 このプロジェクトは [tailcat](https://github.com/tailscale/tailcat) あってこそ成り立って
-います。コントロールプレーンも Tailscale アカウントも root 権限も要らずに WireGuard の
-NAT 越え P2P 通信を実現するという設計そのものが本プロジェクトの土台です。tailcat の作者・
-Tailscale チームに感謝します。
+います。Tailscale アカウントも root 権限も要らずに WireGuard の NAT 越え P2P 通信を実現する
+という設計そのものが本プロジェクトの土台です。tailcat の作者・Tailscale チームに感謝します。
+
+デフォルトの `DefaultDERPMapURL`（https://tailcat.dev/derpmap.json）経由で使える
+Tailscale 運営の無料 DERP リレーにも感謝します。あくまで tailcat 側のドキュメント
+（[tailcat/README.md](tailcat/README.md) の "Bring your own DERP relay" 節）にある通り、
+この無料リレーはレート制限付きで、稼働率やスループットの SLA・保証は一切ないことに
+留意してください。**tailcat が提供しているのはデータプレーン（WireGuard 暗号化 +
+DERP 中継 + NAT 越え）だけで、コントロールプレーン（アカウント管理、デバイス認証、
+アクセス制御など）は一切提供していません**。これらが必要な用途では、`Server`
+`AllowedClients`（ノード公開鍵での絞り込み）などこのライブラリが公開する最小限の機構を
+使うか、独自に上乗せする必要があります。
+
+## 免責事項
+
+本プロジェクトは自己責任で利用してください。tailcat・依存ライブラリ・本ラッパーいずれも
+無保証で提供されています（tailcat 自身も「API・CLI・ワイヤーフォーマットいずれも将来
+変更されうる」「公開 DERP リレーにアップタイム SLA やスループット保証はない」ことを
+明言しています。詳細は [tailcat/README.md](tailcat/README.md) の "Stability" 節参照）。
+特に無料の公開 DERP リレーは
+Tailscale の善意で提供されているものであり、悪用・過度な負荷をかける使い方をしないよう
+注意してください。本番・公開向けアプリで使う場合は、独自の DERP サーバーを運用する
+（`--derpmap-url` / `DERPMapURL` オプション参照）ことを検討してください。
