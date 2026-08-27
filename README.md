@@ -138,6 +138,14 @@ tailcat の TCP スタックはプロセス内 (gVisor netstack) で完結して
   `Server::close()` を呼ぶことで内部的に `DrainTCP` を実行してから閉じるため、
   作りっぱなしで `drop` するより安全です。
 
+## ライセンス
+
+このプロジェクト自身（`tailcat-cgo/`、`rust/`、`flutter/`）は [MIT License](LICENSE) です。
+`tailcat/`（git submodule）は Tailscale 独自の BSD-3-Clause のままで、こちらは変更していま
+せん。依存ライブラリのライセンス監査結果（GPL/AGPL 等のコピーレフトは含まれないことを確認
+済み）は [docs/2026-08-28-session-handoff.md](docs/2026-08-28-session-handoff.md) を参照
+してください。
+
 ## 謝辞
 
 このプロジェクトは [tailcat](https://github.com/tailscale/tailcat) あってこそ成り立って
