@@ -42,6 +42,9 @@ p2p-lib/
     p2p-lib-sys/   低レベル FFI bindings (build.rs が tailcat-cgo を自動ビルド)
     p2p-lib/       安全な高レベル Rust API (Server / Client / Conn / ConnReader / ConnWriter)
       examples/    server.rs, client.rs, chat.rs (CLI チャット)
+  flutter/
+    p2p_lib_flutter/  Flutter FFI プラグイン (Server/Client/Conn を Isolate.run 経由で公開)
+      example/         2人チャットの Flutter サンプルアプリ
   docs/            このファイルのような引き継ぎ・調査メモ
 ```
 
