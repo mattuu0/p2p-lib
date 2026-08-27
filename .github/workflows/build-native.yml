@@ -120,9 +120,14 @@ jobs:
         shell: bash
         working-directory: tailcat-cgo
         run: |
+          # cgo names the header after the -o output file with its
+          # extension swapped for .h (e.g. libtailcat_cgo.so -> .h), not a
+          # fixed "tailcat_cgo.h" -- derive it instead of hardcoding it.
+          header="${{ matrix.out }}"
+          header="${header%.*}.h"
           mkdir -p ../dist
           cp "${{ matrix.out }}" ../dist/
-          cp tailcat_cgo.h ../dist/
+          cp "$header" ../dist/
           if [ -f tailcat_cgo.lib ]; then cp tailcat_cgo.lib ../dist/; fi
 
       - uses: actions/upload-artifact@v4
@@ -174,7 +179,7 @@ jobs:
           CC="$CC" go build -buildmode=c-shared -o libtailcat_cgo.so .
           mkdir -p ../dist/${{ matrix.abi }}
           cp libtailcat_cgo.so ../dist/${{ matrix.abi }}/
-          cp tailcat_cgo.h ../dist/${{ matrix.abi }}/
+          cp libtailcat_cgo.h ../dist/${{ matrix.abi }}/
 
       - uses: actions/upload-artifact@v4
         with:
