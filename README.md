@@ -87,21 +87,32 @@ cargo run --example chat -- <token>
 
 ## モバイル対応について（Android / iOS）
 
-C ABI の設計自体はモバイルでも通用する形にしていますが、このリポジトリでの実ビルド検証は
-デスクトップ（主に Windows）に限定しており、Android Studio / Xcode を用いた実機検証は
-行っていません。将来対応する場合の見通しは以下の通りです。
+C ABI の設計自体はモバイルでも通用する形にしています。Android は実ビルド・実機検証済み、
+iOS は未検証です（詳細は [docs/2026-08-28-session-handoff.md](docs/2026-08-28-session-handoff.md)
+の検証ログを参照）。
 
-- **Android**: `GOOS=android GOARCH=arm64 CGO_ENABLED=1` + Android NDK の clang
-  (`aarch64-linux-android21-clang` 等) を `CC` に指定すれば `-buildmode=c-shared` で `.so`
-  を生成できる見込みです。Kotlin/Java からは JNI 経由で `tailcat_cgo.h` の関数を直接叩くか、
-  Go 公式の `gomobile bind`（独自のオブジェクト変換規約を持つ）を使う2つの道があります。
-- **iOS**: `GOOS=ios GOARCH=arm64` で `-buildmode=c-archive`（iOS は動的リンク不可のため
-  静的 `.a` + ヘッダ）を生成し、`.xcframework` として Xcode に組み込む形になる見込みです。
-  ビルドには Xcode（＝macOS）が必須です。
+- **Android（検証済み）**: Android NDK の clang
+  (`$NDK/toolchains/llvm/prebuilt/<host>/bin/aarch64-linux-android21-clang` 等、API level は
+  ファイル名の数字を変える) を `CC` に指定し、
+  `GOOS=android GOARCH=arm64 CGO_ENABLED=1 go build -buildmode=c-shared -o tailcat_cgo.so .`
+  で `.so` が生成できることを確認済みです。`arm64-v8a` / `armeabi-v7a` (`GOARCH=arm GOARM=7`) /
+  `x86_64` の3 ABI すべてでビルドが通り、実機（armeabi-v7a, API 28）上で `dlopen`/`dlsym`
+  経由で `tailcat_privatekey_generate` と `Server::new → start → ConnBlob` の一連の流れが
+  動作することを確認しています（DERP リレーへの実接続込み）。Kotlin/Java からは JNI 経由で
+  `tailcat_cgo.h` の関数を直接叩くか、Go 公式の `gomobile bind`（独自のオブジェクト変換規約を
+  持つ）を使う2つの道があります。
+- **iOS（未検証）**: `GOOS=ios GOARCH=arm64` で `-buildmode=c-archive`（iOS は動的リンク不可の
+  ため静的 `.a` + ヘッダ）を生成し、`.xcframework` として Xcode に組み込む形になる見込みです。
+  ビルドには Xcode（＝macOS）が必須で、このプロジェクトはこれまで Windows 上で作業しているため
+  未着手です。tailscale.com 本体に iOS 版公式アプリの実績があるため、依存パッケージレベルでの
+  互換性は期待できますが、実際に試すまでは未知数です。
 - **モバイル特有の制約**: tailcat は WireGuard (userspace) + UDP ホールパンチングに依存する
   ため、iOS のバックグラウンド実行制限（Network Extension 内での実行が必要になる可能性）や
   Android のバッテリー最適化 (Doze) による UDP 接続の切断など、デスクトップにはない制約が
-  あります。これらは未検証で、今後の課題です。
+  あります。今回の Android 実機検証でも `setsockopt` で UDP バッファサイズを変更する箇所が
+  権限不足で失敗する警告が出ましたが（スループットのみに影響、と Go 側が自ら明記しており
+  機能的には無視できる）、これはサンドボックスが強い環境ほど起こりやすい類の制約です。
+  本格対応（Network Extension 化、Doze 対策など）は未着手の課題です。
 
 ## Close 順序について（重要）
 
