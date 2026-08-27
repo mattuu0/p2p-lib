@@ -124,3 +124,10 @@ tailcat の TCP スタックはプロセス内 (gVisor netstack) で完結して
 - プロセスをすぐ終了する direct な用途（サーバーを畳んで即終了、など）では、
   `Server::close()` を呼ぶことで内部的に `DrainTCP` を実行してから閉じるため、
   作りっぱなしで `drop` するより安全です。
+
+## 謝辞
+
+このプロジェクトは [tailcat](https://github.com/tailscale/tailcat) あってこそ成り立って
+います。コントロールプレーンも Tailscale アカウントも root 権限も要らずに WireGuard の
+NAT 越え P2P 通信を実現するという設計そのものが本プロジェクトの土台です。tailcat の作者・
+Tailscale チームに感謝します。
