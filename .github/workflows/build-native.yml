@@ -75,7 +75,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "1"
-        run: go build -buildmode=c-shared -o "${{ matrix.out }}" .
+        run: go build -ldflags="-s -w" -buildmode=c-shared -o "${{ matrix.out }}" .
 
       - name: Build shared library (Windows, mingw-w64)
         if: runner.os == 'Windows'
@@ -105,7 +105,7 @@ jobs:
           }
           Write-Host "using CC=$gcc"
           $env:CC = $gcc
-          go build -buildmode=c-shared -o "${{ matrix.out }}" .
+          go build -ldflags="-s -w" -buildmode=c-shared -o "${{ matrix.out }}" .
 
       - name: Generate MSVC import library (Windows only)
         if: runner.os == 'Windows'
@@ -185,7 +185,7 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           CC="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.clang }}"
-          CC="$CC" go build -buildmode=c-shared -o libtailcat_cgo.so .
+          CC="$CC" go build -ldflags="-s -w" -buildmode=c-shared -o libtailcat_cgo.so .
           mkdir -p ../dist/${{ matrix.abi }}
           cp libtailcat_cgo.so ../dist/${{ matrix.abi }}/
           cp libtailcat_cgo.h ../dist/${{ matrix.abi }}/
@@ -229,7 +229,7 @@ jobs:
             SDKROOT="$SDK" CC="$CC" \
             CGO_CFLAGS="-isysroot $SDK $VERSION_MIN_FLAG -arch ${{ matrix.goarch }}" \
             CGO_LDFLAGS="-isysroot $SDK $VERSION_MIN_FLAG -arch ${{ matrix.goarch }}" \
-            go build -buildmode=c-archive -o libtailcat_cgo.a .
+            go build -ldflags="-s -w" -buildmode=c-archive -o libtailcat_cgo.a .
           mkdir -p ../dist/${{ matrix.out_dir }}
           cp libtailcat_cgo.a ../dist/${{ matrix.out_dir }}/
           cp libtailcat_cgo.h ../dist/${{ matrix.out_dir }}/

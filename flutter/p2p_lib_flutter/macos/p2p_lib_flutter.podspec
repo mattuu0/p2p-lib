@@ -37,7 +37,7 @@ Flutter FFI bindings for tailcat-cgo, a cgo C ABI wrapper around tailcat
     set -e
     cd "#{File.dirname(__FILE__)}/../../../tailcat-cgo"
     OUT="#{File.dirname(__FILE__)}/libtailcat_cgo.dylib"
-    CGO_ENABLED=1 go build -buildmode=c-shared -o "$OUT" .
+    CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-shared -o "$OUT" .
     install_name_tool -id "@rpath/libtailcat_cgo.dylib" "$OUT"
   CMD
 

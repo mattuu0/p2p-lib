@@ -213,6 +213,7 @@ fn build_from_go_source(lib_path: &Path, target_os: &str, target_arch: &str) {
         .env("CGO_ENABLED", "1")
         .args([
             "build",
+            "-ldflags=-s -w", // strip symbols/DWARF debug info; roughly halves the shared library's size
             "-buildmode=c-shared",
             "-o",
             lib_path.to_str().unwrap(),

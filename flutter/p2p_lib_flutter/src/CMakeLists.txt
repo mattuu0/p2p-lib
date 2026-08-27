@@ -52,7 +52,7 @@ add_custom_command(
   OUTPUT "${TAILCAT_CGO_OUT_LIB}"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/go-build"
   COMMAND ${CMAKE_COMMAND} -E env ${GO_ENV_ARGS}
-    ${GO_EXECUTABLE} build -buildmode=c-shared -o "${TAILCAT_CGO_BUILT_LIB}" .
+    ${GO_EXECUTABLE} build "-ldflags=-s -w" -buildmode=c-shared -o "${TAILCAT_CGO_BUILT_LIB}" .
   COMMAND ${CMAKE_COMMAND} -E copy "${TAILCAT_CGO_BUILT_LIB}" "${TAILCAT_CGO_OUT_LIB}"
   WORKING_DIRECTORY "${TAILCAT_CGO_DIR}"
   COMMENT "Building tailcat-cgo (Go cgo shared library)"

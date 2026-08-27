@@ -37,7 +37,7 @@ Flutter FFI bindings for tailcat-cgo, a cgo C ABI wrapper around tailcat
         SDKROOT="$sdkroot" CC="$cc" \\
         CGO_CFLAGS="-isysroot $sdkroot $min_flag -arch $arch" \\
         CGO_LDFLAGS="-isysroot $sdkroot $min_flag -arch $arch" \\
-        go build -buildmode=c-archive -o "$out" .
+        go build -ldflags="-s -w" -buildmode=c-archive -o "$out" .
     }
 
     build_slice iphoneos "-miphoneos-version-min=13.0" arm64 "$OUT/libtailcat_cgo_device.a"
