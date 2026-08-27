@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["p2p-lib-sys", "p2p-lib"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+repository = "https://github.com/mattuu0/p2p-lib"

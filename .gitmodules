@@ -1,0 +1,3 @@
+[submodule "tailcat"]
+	path = tailcat
+	url = git@github.com:tailscale/tailcat.git

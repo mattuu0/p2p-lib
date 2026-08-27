@@ -1,0 +1,19 @@
+[package]
+name = "p2p-lib"
+description = "Safe Rust API for tailcat-based P2P networking (WireGuard + DERP, no control plane)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+p2p-lib-sys = { path = "../p2p-lib-sys" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "sync"], optional = true }
+
+[features]
+tokio = ["dep:tokio"]
+
+[dev-dependencies]

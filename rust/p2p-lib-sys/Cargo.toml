@@ -1,0 +1,9 @@
+[package]
+name = "p2p-lib-sys"
+description = "Raw FFI bindings to the tailcat cgo shared library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+links = "tailcat_cgo"
+build = "build.rs"

@@ -1,0 +1,6 @@
+tailcat_cgo.dll
+tailcat_cgo.so
+tailcat_cgo.dylib
+tailcat_cgo.h
+tailcat-cgo.exe
+*.exe
