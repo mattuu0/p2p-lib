@@ -1,0 +1,22 @@
+PODS:
+  - Flutter (1.0.0)
+  - p2p_lib_flutter (0.0.1):
+    - Flutter
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - p2p_lib_flutter (from `.symlinks/plugins/p2p_lib_flutter/ios`)
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  p2p_lib_flutter:
+    :path: ".symlinks/plugins/p2p_lib_flutter/ios"
+
+SPEC CHECKSUMS:
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  p2p_lib_flutter: 8cb3040337286e26b6e2e9ea38a865c1837bce2e
+
+PODFILE CHECKSUM: 3c63482e143d1b91d2d2560aee9fb04ecc74ac7e
+
+COCOAPODS: 1.16.2

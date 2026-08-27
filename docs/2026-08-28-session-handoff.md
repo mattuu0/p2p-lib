@@ -177,28 +177,109 @@ permitted` という警告が出たが、これはこの Fire TV 環境の権限
 - `Conn` の Read/Write ループを Kotlin 側の Coroutine とどう協調させるか
   （Rust の `spawn_blocking` 相当）は未検討。
 
-## iOS（未着手）
+## macOS 検証（済み・成功、2026-08-28 追記）
 
-Xcode（＝ macOS）が必須で、このマシンは Windows のためビルドはおろか検証の着手すらして
-いない。tailscale.com 本体に公式 iOS アプリの実績があるため、依存パッケージレベルの
-互換性は期待できる。見込みとしては：
+環境：Apple Silicon Mac（arm64）、Xcode 同梱コマンドラインツール、Go 1.26.1。
 
-- `GOOS=ios GOARCH=arm64 CGO_ENABLED=1 go build -buildmode=c-archive -o tailcat_cgo.a .`
-  で静的ライブラリ + ヘッダを生成し、`.xcframework` として Xcode に組み込む
-  （iOS は動的リンクが原則不可なので `c-shared` ではなく `c-archive`）
-- ビルドが通ったら、Swift から最小限のリンクテストをする、という Android と同じ流れを踏襲
+### ビルド結果
+
+```sh
+cd tailcat-cgo
+go build -buildmode=c-shared -o /tmp/tailcat_cgo_macos_arm64.dylib .
+```
+
+追加のフラグ・環境変数一切不要でビルド成功（`otool -L` で
+CoreFoundation/Security/libresolv/libSystem のみリンクされていることを確認）。
+Windows のような MSVC インポートライブラリ問題は macOS には存在しない
+（`build.rs` の macOS 分岐は `dylib` 指定のみでそのまま動作）。
+
+### Rust クレート経由の e2e 検証
+
+`cargo build --examples` が cgo ビルドを自動実行してリンクまで成功。
+`server`/`client` example を同一マシン上の2プロセスとして実行し、
+DERP リレー（region 303/1）経由でハンドシェイク → メッセージ送受信 → 半クローズによる
+EOF 検知まで、Windows で確認済みだった挙動が macOS でも同一に動作することを確認。
+
+### 次にやるべきこと（macOS）
+
+- 今回はコマンドライン実行のみ検証。macOS デスクトップアプリ（.app バンドル）への
+  組み込み・コード署名・サンドボックス環境での動作は未検証。
+- Network Extension や entitlements が必要になるかは未調査（tailcat 自体は
+  ユーザー空間 netstack で完結するため通常のアプリ権限で動く可能性が高いが未確認）。
+
+## iOS 検証（済み・成功、2026-08-28 追記）
+
+環境：上記と同じ Apple Silicon Mac。iOS は動的リンクが原則不可なため
+`c-shared` ではなく `c-archive` を使用。
+
+### ビルド結果
+
+実機向け（arm64）とシミュレータ向け（arm64、Apple Silicon Mac 上で動くシミュレータ）の
+両方をビルドし、`xcodebuild -create-xcframework` で1つの `.xcframework` にまとめる
+ところまで成功：
+
+```sh
+# 実機 (iphoneos)
+SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+GOOS=ios GOARCH=arm64 CGO_ENABLED=1 \
+  SDKROOT="$SDK" CC=$(xcrun --sdk iphoneos -f clang) \
+  CGO_CFLAGS="-isysroot $SDK -miphoneos-version-min=13.0 -arch arm64" \
+  CGO_LDFLAGS="-isysroot $SDK -miphoneos-version-min=13.0 -arch arm64" \
+  go build -buildmode=c-archive -o tailcat_cgo_ios_arm64.a .
+
+# シミュレータ (iphonesimulator)
+SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+GOOS=ios GOARCH=arm64 CGO_ENABLED=1 \
+  SDKROOT="$SDK" CC=$(xcrun --sdk iphonesimulator -f clang) \
+  CGO_CFLAGS="-isysroot $SDK -mios-simulator-version-min=13.0 -arch arm64" \
+  CGO_LDFLAGS="-isysroot $SDK -mios-simulator-version-min=13.0 -arch arm64" \
+  go build -buildmode=c-archive -o tailcat_cgo_iossim_arm64.a .
+
+xcodebuild -create-xcframework \
+  -library tailcat_cgo_ios_arm64.a -headers <device-headers-dir> \
+  -library tailcat_cgo_iossim_arm64.a -headers <sim-headers-dir> \
+  -output tailcat_cgo.xcframework
+```
+
+いずれも追加パッチ不要でビルド成功（Android の NDK ほどの罠はなかった）。
+
+### 実機能検証（シミュレータ内実行、成功）
+
+JNI 検証と同様、Swift バインディングを書く前に C の最小プログラムで直接シンボルを
+叩いて検証した。`clang` でシミュレータ向けバイナリを静的リンクし、
+**`xcrun simctl spawn <UDID> <バイナリ>`** で起動中のシミュレータ内で実行
+（ホスト macOS 上で直接実行すると `dyld[...]: DYLD_ROOT_PATH not set for simulator
+program` で失敗するため、必ず `simctl spawn` 経由にすること）。
+
+1. `tailcat_privatekey_generate()` → 成功（鍵ペア JSON が返る）
+2. `tailcat_server_new` → `tailcat_server_start` → `tailcat_server_connblob` の一連の
+   流れ → 成功。実際に DERP region 304 に接続し、有効な conn blob トークンを発行
+   （ログは Android 実機検証時と同一パターン：gVisor netstack 初期化 → WireGuard
+   デバイス起動 → DERP ホームリレー確立）
+
+iOS シミュレータのサンドボックスから外部の DERP サーバーへの UDP/HTTPS アクセスが
+問題なく通ることが実証された。実機（実際の iPhone/iPad 実体）での検証はまだ行って
+いないが、シミュレータはネットワークスタック自体はホスト共有のため、ネットワーク到達性
+に関する不確実性はほぼ解消されたと考えてよい。
+
+### 次にやるべきこと（iOS）
+
+- **Swift バインディングはまだ書いていない**。次はこの `.xcframework` を Swift Package
+  として組み込み、Swift から最小サンプル（Android の Kotlin 相当）を作るのが自然な
+  次のステップ。
+- **実機（シミュレータでない実体の iPhone/iPad）での検証は未実施**。実機は開発者
+  署名・provisioning profile が必要なため、実機が用意でき次第別途検証すること。
 - App Store 配布を見据えるなら、バックグラウンドでの WireGuard/UDP 処理が
   Network Extension（`NEPacketTunnelProvider`）内での実行を要求される可能性が高く、
-  これは未検証・未調査
-
-**macOS 環境が用意でき次第、この節を更新して検証ログを残すこと。**
+  これは未検証・未調査（フォアグラウンドでの直接呼び出しは今回確認済み）。
+- `c-archive` が生成する `.a` はサイズが大きい（arm64 単体で約46MB）。リリースビルド時の
+  シンボルストリップ・アーカイブサイズ最適化は未検討。
 
 ## その他の未着手事項
 
 - Apache-2.0/BSD/MIT 依存の著作権表示同梱（THIRD_PARTY_LICENSES ファイル）
 - Linux での cgo ビルド・実機検証（Windows でのビルドしか試していない。おそらく普通に
   動くはずだが未確認）
-- macOS デスクトップでの cgo ビルド・実機検証（同上）
 - 鍵の真正性検証・なりすまし対策など、アプリ層で追加すべきセキュリティレイヤーの議論は
   会話ログ上で行ったが（グローバル IP 露出のトレードオフ、通信路暗号化は tailcat が担保する
   一方で相手認証や保存データの暗号化はアプリ側の責務、という結論）、ライブラリの実装には
