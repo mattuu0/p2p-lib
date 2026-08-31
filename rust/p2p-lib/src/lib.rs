@@ -47,10 +47,12 @@ mod conn;
 mod error;
 mod ffi;
 mod keys;
+mod peer_path;
 mod server;
 
 pub use client::Client;
 pub use conn::{Conn, ConnReader, ConnWriter};
 pub use error::{Error, Result};
 pub use keys::{resolve_conn_blob, PrivateKey};
+pub use peer_path::PeerPath;
 pub use server::Server;

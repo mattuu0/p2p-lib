@@ -5,6 +5,7 @@ use crate::conn::Conn;
 use crate::error::{take_error, Result};
 use crate::ffi::{take_string_or_err, to_cstring};
 use crate::keys::PrivateKey;
+use crate::peer_path::PeerPath;
 
 /// Connects to a [`crate::Server`] over a WireGuard tunnel relayed through
 /// DERP, given the connection token the server printed.
@@ -60,6 +61,22 @@ impl Client {
             return Err(unsafe { take_error(self.handle) });
         }
         Ok(Duration::from_millis(latency_ms as u64))
+    }
+
+    /// Reports whether the (single, 1:1) connected peer is reachable over a
+    /// direct UDP path or is still relayed through DERP. Useful to warn a
+    /// user that their connection is going through a relay (higher latency,
+    /// bandwidth-capped) rather than a direct path. Call this periodically
+    /// after [`Client::dial_tcp_port`] returns -- NAT traversal can take a
+    /// few seconds, so an early call may report [`PeerPath::Unknown`] or
+    /// [`PeerPath::Relay`] even if a direct path is established shortly
+    /// after.
+    pub fn peer_path(&self) -> PeerPath {
+        let ptr = unsafe { p2p_lib_sys::tailcat_client_peer_path(self.handle) };
+        match unsafe { crate::ffi::take_string(ptr) } {
+            Some(s) => PeerPath::from_c_str(&s),
+            None => PeerPath::Unknown,
+        }
     }
 
     /// Opens a TCP connection to the given port on the server, starting

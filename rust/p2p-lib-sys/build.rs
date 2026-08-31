@@ -51,8 +51,8 @@ fn main() {
 }
 
 /// Shared tail end of both code paths: copy the built/downloaded shared
-/// library next to the final binary, generate the MSVC import lib on
-/// Windows, and emit the link directives.
+/// library next to the final binary, generate an import lib appropriate for
+/// the active Windows ABI (MSVC vs GNU/MinGW), and emit the link directives.
 fn finish_link(
     out_dir: &Path,
     lib_path: &Path,
@@ -64,7 +64,17 @@ fn finish_link(
     copy_to_target_dirs(out_dir, lib_path, lib_filename);
 
     if target_os == "windows" {
-        generate_msvc_import_lib(out_dir, lib_path, target_arch);
+        // rustc's `x86_64-pc-windows-msvc` links with link.exe and needs an
+        // MSVC-format .lib; `x86_64-pc-windows-gnu` links with GNU ld and
+        // needs a GNU-format .dll.a instead -- neither linker accepts the
+        // other's import library format, so the target_env this crate is
+        // actually being built for decides which one to generate.
+        let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+        match target_env.as_str() {
+            "msvc" => generate_msvc_import_lib(out_dir, lib_path, target_arch),
+            "gnu" => generate_gnu_import_lib(out_dir, lib_path),
+            other => panic!("p2p-lib-sys: unsupported Windows target_env `{other}`"),
+        }
     }
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
@@ -302,24 +312,25 @@ fn generate_msvc_import_lib(out_dir: &Path, dll_path: &Path, target_arch: &str) 
     }
     let dumpbin_text = String::from_utf8_lossy(&dumpbin_out.stdout);
 
-    let mut def_contents = String::from("EXPORTS\n");
     let mut found_any = false;
-    for line in dumpbin_text.lines() {
-        // Export table rows look like:
-        //   "          1    0 00846C80 tailcat_client_close"
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() == 4 && fields[0].parse::<u32>().is_ok() && fields[3].starts_with("tailcat_") {
-            def_contents.push_str(fields[3]);
-            def_contents.push('\n');
-            found_any = true;
-        }
-    }
+    let exports: Vec<&str> = dumpbin_text
+        .lines()
+        .filter_map(|line| {
+            // Export table rows look like:
+            //   "          1    0 00846C80 tailcat_client_close"
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            (fields.len() == 4 && fields[0].parse::<u32>().is_ok() && fields[3].starts_with("tailcat_"))
+                .then(|| {
+                    found_any = true;
+                    fields[3]
+                })
+        })
+        .collect();
     if !found_any {
         panic!("p2p-lib-sys: found no tailcat_* exports in dumpbin output; DLL build may have failed silently");
     }
 
-    let def_path = out_dir.join("tailcat_cgo.def");
-    fs::write(&def_path, def_contents).expect("p2p-lib-sys: failed to write .def file");
+    let def_path = write_def_file(out_dir, &exports);
 
     let msvc_machine = match target_arch {
         "x86_64" => "X64",
@@ -338,6 +349,89 @@ fn generate_msvc_import_lib(out_dir: &Path, dll_path: &Path, target_arch: &str) 
         .expect("p2p-lib-sys: failed to run `lib.exe` -- run from an MSVC developer prompt, or ensure MSVC Build Tools are on PATH");
     if !status.success() {
         panic!("p2p-lib-sys: `lib.exe /def` failed (see output above)");
+    }
+}
+
+/// Writes a minimal `.def` file (just an `EXPORTS` section listing the given
+/// symbol names) shared by both the MSVC (`lib.exe /def`) and GNU (`dlltool
+/// --def`) import-lib generation paths.
+fn write_def_file(out_dir: &Path, exports: &[&str]) -> PathBuf {
+    let mut def_contents = String::from("EXPORTS\n");
+    for name in exports {
+        def_contents.push_str(name);
+        def_contents.push('\n');
+    }
+    let def_path = out_dir.join("tailcat_cgo.def");
+    fs::write(&def_path, def_contents).expect("p2p-lib-sys: failed to write .def file");
+    def_path
+}
+
+/// On the GNU (MinGW) target, `ld` needs a GNU-format `.dll.a` import
+/// library instead of MSVC's `.lib` -- neither format is accepted by the
+/// other linker. We list the DLL's exports with `objdump` (part of the
+/// mingw-w64 toolchain rustc itself needs on this target) and hand them to
+/// `dlltool` to produce `libtailcat_cgo.dll.a`.
+fn generate_gnu_import_lib(out_dir: &Path, dll_path: &Path) {
+    let lib_out = out_dir.join("libtailcat_cgo.dll.a");
+    if lib_out.is_file() {
+        return;
+    }
+
+    let objdump_out = Command::new("objdump")
+        .args(["-p", dll_path.to_str().unwrap()])
+        .output()
+        .expect("p2p-lib-sys: failed to run `objdump` -- ensure the mingw-w64 toolchain (which ships with the GNU Rust target) is on PATH");
+    if !objdump_out.status.success() {
+        panic!(
+            "p2p-lib-sys: `objdump -p` failed:\n{}",
+            String::from_utf8_lossy(&objdump_out.stderr)
+        );
+    }
+    let objdump_text = String::from_utf8_lossy(&objdump_out.stdout);
+
+    // `objdump -p` prints several tables; the DLL's own exports are listed
+    // under the "[Ordinal/Name Pointer] Table" header (a different,
+    // earlier-printed "[Ordinal/Name Pointer] Table" also appears per
+    // imported system DLL, but those entries are e.g. "GetProcAddress", not
+    // "tailcat_*", so filtering by prefix is sufficient without needing to
+    // track which section we're in). Rows look like:
+    //   "\t[   0] +base[   1]  0000 tailcat_client_close"
+    // One unrelated line also ends in a `tailcat_*`-prefixed token: the
+    // Export Table header's own DLL name, e.g.
+    //   "Name    000000000335810e tailcat_cgo.dll"
+    // -- exclude it explicitly, since it isn't a real exported symbol and
+    // corrupts the .def file if included (dlltool then miscounts ordinals).
+    let mut found_any = false;
+    let exports: Vec<&str> = objdump_text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("Name "))
+        .filter_map(|line| {
+            let name = line.trim().rsplit(' ').next()?;
+            (!name.is_empty() && name.starts_with("tailcat_") && !name.ends_with(".dll")).then(|| {
+                found_any = true;
+                name
+            })
+        })
+        .collect();
+    if !found_any {
+        panic!("p2p-lib-sys: found no tailcat_* exports in objdump output; DLL build may have failed silently");
+    }
+
+    let def_path = write_def_file(out_dir, &exports);
+
+    let status = Command::new("dlltool")
+        .args([
+            "--input-def",
+            def_path.to_str().unwrap(),
+            "--dllname",
+            dll_path.file_name().unwrap().to_str().unwrap(),
+            "--output-lib",
+            lib_out.to_str().unwrap(),
+        ])
+        .status()
+        .expect("p2p-lib-sys: failed to run `dlltool` -- ensure the mingw-w64 toolchain is on PATH");
+    if !status.success() {
+        panic!("p2p-lib-sys: `dlltool --input-def` failed (see output above)");
     }
 }
 

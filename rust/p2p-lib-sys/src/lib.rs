@@ -22,6 +22,7 @@ extern "C" {
     pub fn tailcat_server_accept(handle: c_longlong, timeout_ms: c_longlong) -> c_longlong;
     pub fn tailcat_server_connblob(handle: c_longlong) -> *mut c_char;
     pub fn tailcat_server_state(handle: c_longlong) -> *mut c_char;
+    pub fn tailcat_server_peer_path(handle: c_longlong) -> *mut c_char;
     pub fn tailcat_server_close(handle: c_longlong) -> c_int;
 
     pub fn tailcat_client_new(conn_blob: *const c_char) -> c_longlong;
@@ -29,6 +30,7 @@ extern "C" {
     pub fn tailcat_client_public_key(handle: c_longlong) -> *mut c_char;
     pub fn tailcat_client_ping(handle: c_longlong, timeout_ms: c_longlong) -> c_longlong;
     pub fn tailcat_client_dial_tcp_port(handle: c_longlong, port: c_int, timeout_ms: c_longlong) -> c_longlong;
+    pub fn tailcat_client_peer_path(handle: c_longlong) -> *mut c_char;
     pub fn tailcat_client_close(handle: c_longlong) -> c_int;
 
     pub fn tailcat_conn_read(handle: c_longlong, buf: *mut c_uchar, length: c_int) -> c_int;

@@ -171,6 +171,13 @@ impl io::Read for ConnReader {
 }
 
 /// The write half of a [`Conn`] split via [`Conn::split`].
+///
+/// `Clone`s share the same underlying handle; the connection stays open
+/// until every clone (and the paired [`ConnReader`]) has dropped, so a
+/// clone can be handed to a watchdog thread purely to call
+/// [`ConnWriter::force_close`] on a heartbeat timeout without affecting
+/// normal write ownership.
+#[derive(Clone)]
 pub struct ConnWriter {
     shared: std::sync::Arc<SharedHandle>,
 }
@@ -184,6 +191,23 @@ impl ConnWriter {
             return Err(unsafe { crate::error::take_error(handle) });
         }
         Ok(())
+    }
+
+    /// Forcibly closes the underlying connection right now, from whichever
+    /// side (reader or writer half) calls this. Unlike [`Conn::close`],
+    /// this doesn't require ownership -- a `&ConnWriter` clone kept around
+    /// on a separate watchdog thread can call this to interrupt a peer's
+    /// blocking [`ConnReader::read`] the moment an application-level
+    /// heartbeat times out, without waiting for the OS-level TCP stack to
+    /// notice the peer is gone. Safe to call more than once or after the
+    /// paired [`ConnReader`] has already dropped/closed it.
+    pub fn force_close(&self) {
+        let handle = self.shared.handle;
+        if handle != 0 {
+            unsafe {
+                p2p_lib_sys::tailcat_conn_close(handle);
+            }
+        }
     }
 }
 

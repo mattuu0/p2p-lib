@@ -5,6 +5,7 @@ use crate::conn::Conn;
 use crate::error::{take_error, Result};
 use crate::ffi::{take_string_or_err, to_cstring};
 use crate::keys::PrivateKey;
+use crate::peer_path::PeerPath;
 
 /// Listens for tailcat clients over a WireGuard tunnel relayed through
 /// DERP, with no control plane or Tailscale account required.
@@ -95,6 +96,22 @@ impl Server {
     pub fn state_json(&self) -> Result<String> {
         let ptr = unsafe { p2p_lib_sys::tailcat_server_state(self.handle) };
         unsafe { take_string_or_err(ptr, self.handle) }
+    }
+
+    /// Reports whether the (single, 1:1) connected peer is reachable over a
+    /// direct UDP path or is still relayed through DERP. Useful to warn a
+    /// user that their connection is going through a relay (higher latency,
+    /// bandwidth-capped) rather than a direct path. Call this periodically
+    /// after [`Server::accept`] returns a [`Conn`] -- NAT traversal can take
+    /// a few seconds, so an early call may report [`PeerPath::Unknown`] or
+    /// [`PeerPath::Relay`] even if a direct path is established shortly
+    /// after.
+    pub fn peer_path(&self) -> PeerPath {
+        let ptr = unsafe { p2p_lib_sys::tailcat_server_peer_path(self.handle) };
+        match unsafe { crate::ffi::take_string(ptr) } {
+            Some(s) => PeerPath::from_c_str(&s),
+            None => PeerPath::Unknown,
+        }
     }
 
     /// Shuts the server down, draining in-flight TCP data first so a

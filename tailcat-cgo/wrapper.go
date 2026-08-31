@@ -32,6 +32,7 @@ import (
 	"unsafe"
 
 	"github.com/tailscale/tailcat"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/types/key"
 )
 
@@ -105,6 +106,27 @@ func tailcat_connblob_resolve(connBlob *C.char) *C.char {
 		return nil
 	}
 	return C.CString(string(resolved))
+}
+
+// peerPathFromStatus inspects the single (1:1) peer in st.Peer and reports
+// whether it's reachable over a direct UDP path or still relayed through
+// DERP. See tailscale.com/ipn/ipnstate: CurAddr is set once a direct path
+// is established; Relay (DERP region) is set whenever the connection is
+// (at least currently) going through a relay. A peer can briefly have both
+// set during the handoff from relay to direct, so CurAddr wins when present.
+func peerPathFromStatus(st *ipnstate.Status) string {
+	if st == nil {
+		return "unknown"
+	}
+	for _, peer := range st.Peer {
+		if peer.CurAddr != "" {
+			return "direct"
+		}
+		if peer.Relay != "" {
+			return "relay"
+		}
+	}
+	return "unknown"
 }
 
 // ---- Server ----
@@ -268,6 +290,23 @@ func tailcat_server_state(handle C.longlong) *C.char {
 	return C.CString(b)
 }
 
+// tailcat_server_peer_path reports whether the (single, 1:1) connected peer
+// is reachable over a direct UDP path or is still relayed through DERP.
+// Returns one of "direct", "relay", "unknown" (no peer info yet, e.g. right
+// after Start()) as a C string, or NULL on error. The caller owns the
+// returned string.
+//
+//export tailcat_server_peer_path
+func tailcat_server_peer_path(handle C.longlong) *C.char {
+	h := Handle(handle)
+	e, ok := getServer(h)
+	if !ok {
+		setLastError(h, errors.New("invalid server handle"))
+		return nil
+	}
+	return C.CString(peerPathFromStatus(e.srv.Status()))
+}
+
 // tailcat_server_close shuts the server down, closing its WireGuard engine
 // and DERP connection, draining in-flight TCP data first (see the plan's
 // notes on tailcat.Server.DrainTCP) so a caller that exits its process
@@ -384,6 +423,23 @@ func tailcat_client_dial_tcp_port(handle C.longlong, port C.int, timeoutMs C.lon
 		return 0
 	}
 	return C.longlong(reg.put(conn))
+}
+
+// tailcat_client_peer_path reports whether the (single, 1:1) connected peer
+// is reachable over a direct UDP path or is still relayed through DERP.
+// Returns one of "direct", "relay", "unknown" (client not started yet, or
+// no path established) as a C string, or NULL on error. The caller owns
+// the returned string.
+//
+//export tailcat_client_peer_path
+func tailcat_client_peer_path(handle C.longlong) *C.char {
+	h := Handle(handle)
+	cl, ok := getClient(h)
+	if !ok {
+		setLastError(h, errors.New("invalid client handle"))
+		return nil
+	}
+	return C.CString(peerPathFromStatus(cl.Status()))
 }
 
 // tailcat_client_close shuts the client down. Returns 0 on success
